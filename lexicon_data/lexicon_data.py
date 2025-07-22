@@ -2,6 +2,11 @@ import numpy as np
 import pandas as pd
 import re
 from sklearn.metrics import classification_report
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import classification_report, accuracy_score
 
 # Load datasets
 prices = pd.read_csv('kaggle_data/sp500_headlines_2008_2024.csv', parse_dates=['Date'])
@@ -20,12 +25,8 @@ def headline_sentiment(headline):
     avg = np.mean(scores) if scores else 0.0
     return pd.Series([total, avg])
 
-# Combine all headlines into one string per row, then apply
-headline_cols = [col for col in data.columns if col.lower().startswith('headline')]
-data['all_headlines'] = data[headline_cols].fillna('').agg(' '.join, axis=1)
-
 # Apply sentiment function row-wise and assign the result to two new columns
-data[['sent_sum', 'sent_avg']] = data['all_headlines'].apply(headline_sentiment)
+data[['sent_sum', 'sent_avg']] = data['Title'].apply(headline_sentiment)
 
 # Label: next-day return direction (up/down)
 data['next_close'] = data['CP'].shift(-1)
@@ -36,7 +37,7 @@ data['return'] = data['CP'].pct_change()
 data['ma5'] = data['CP'].rolling(5).mean()
 data.dropna(inplace=True)
 
-from sklearn.model_selection import train_test_split
+data.to_csv('./kaggle_data/add_lexicon_sentiment_to_headlines.csv', index=False)
 
 features = ['sent_sum', 'sent_avg', 'return', 'ma5']
 X = data[features]
@@ -45,11 +46,6 @@ y = data['target']
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, shuffle=False  # maintain time order
 )
-
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
-from sklearn.metrics import classification_report, accuracy_score
 
 models = {
     'Decision Tree': DecisionTreeClassifier(max_depth=5, random_state=42),
