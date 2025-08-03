@@ -99,7 +99,7 @@ def get_adjusted_daily_history(ticker: str, years_back: int = YEARS_OF_HISTORY) 
 # --- Main Execution ---
 if __name__ == "__main__":
     tickers_to_analyze = [
-        'VOO',
+        'SPY',
         'VXX'
     ]
 
