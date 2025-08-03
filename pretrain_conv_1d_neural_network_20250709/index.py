@@ -258,10 +258,10 @@ def train_model(model, train_loader, test_loader, optimizer, loss_fn_token, loss
 
             # 2. Calculate loss
             # token_multiplier = 3.0 if epoch < 15 else 2.0 if epoch < 30 else 1.95 if epoch < 40 else 1.5 if epoch < 150 else 1.25
-            token_multiplier = 3.4 if epoch < 10 else 5.0 if epoch < 30 else 1.5
+            token_multiplier = 3.2 if epoch < 10 else 5.0 if epoch < 30 else 1.25
             loss_token = loss_fn_token(token_logits, true_masked_tokens) * token_multiplier
             # sentiment_multiplier = 0.4 if epoch < 5 else 0.7 if epoch < 15 else 0.9 if epoch < 30 else 1.05 if epoch < 50 else 1.25
-            sentiment_multiplier = 1.7 if epoch < 5 else 1.25 if epoch < 15 else 1.0
+            sentiment_multiplier = 1.7 if epoch < 5 else 1.25 if epoch < 15 else 5.0
             loss_sentiment = loss_fn_sentiment(sentiment_logits, sentiments) * sentiment_multiplier
             
             # We combine the losses. A simple sum is a good starting point.
