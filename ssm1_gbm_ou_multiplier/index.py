@@ -80,9 +80,9 @@ train_x['log_SP500_Adj_Close'] = np.log(train_x['SP500_Adj_Close'])
 # initial guesses for mu and sigma from hierarchical approach - fit gbm with MLE
 mu_guess = torch.tensor(0.0029898293480198263, dtype=torch.float32, requires_grad=True)
 sigma_guess = torch.tensor(0.0735540618142129, dtype=torch.float32, requires_grad=True)
-theta_guess = torch.tensor(0.05, dtype=torch.float32, requires_grad=True)
-alpha_guess = torch.tensor(0.001, dtype=torch.float32, requires_grad=True)
-rho_guess = torch.tensor(-0.1, dtype=torch.float32, requires_grad=True)
+theta_guess = torch.tensor(0.1, dtype=torch.float32, requires_grad=True)
+alpha_guess = torch.tensor(0.01, dtype=torch.float32, requires_grad=True)
+rho_guess = torch.tensor(-0.15, dtype=torch.float32, requires_grad=True)
 
 initial_y_guess = torch.tensor(0.0, dtype=torch.float32, requires_grad=True)
 
@@ -92,17 +92,20 @@ initial_ln_x_guess_variance = torch.tensor(0.3, dtype=torch.float32, requires_gr
 initial_y_guess_variance = torch.tensor(0.3, dtype=torch.float32, requires_grad=True)
 initial_ln_x_y_guess_covariance = torch.tensor(-0.15, dtype=torch.float32, requires_grad=True)
 observation_matrix = torch.tensor([[1.0, 1.0]], dtype=torch.float32)  # shape (1,2)
-observation_noise_variance = torch.tensor([[0.01]], dtype=torch.float32, requires_grad=True)
+observation_noise_variance = torch.tensor([[1e-5]], dtype=torch.float32, requires_grad=True)
 
-optimizer = torch.optim.Adam([mu_guess, sigma_guess, theta_guess, alpha_guess, rho_guess, initial_y_guess, initial_ln_x_guess_variance, initial_y_guess_variance, initial_ln_x_y_guess_covariance, observation_noise_variance], lr=0.01)
+optimizer = torch.optim.Adam([mu_guess, sigma_guess, theta_guess, alpha_guess, rho_guess, initial_y_guess, initial_ln_x_guess_variance, initial_y_guess_variance, initial_ln_x_y_guess_covariance, observation_noise_variance], lr=2e-6)
 
-for epoch in range(100):
-    initial_ln_x_guess = torch.tensor(train_x['log_SP500_Adj_Close'].iloc[0] - initial_y_guess, dtype=torch.float32)
-    state = torch.tensor([[initial_ln_x_guess.item()], [initial_y_guess.item()]], dtype=torch.float32)  # shape (2,1)
-    state_covariance_matrix = torch.tensor([
-        [initial_ln_x_guess_variance, initial_ln_x_y_guess_covariance],
-        [initial_ln_x_y_guess_covariance, initial_y_guess_variance]
-    ], dtype=torch.float32)  # shape (2,2)
+best_loss = float('inf')
+best_params = None
+
+for epoch in range(400):
+    initial_ln_x_guess = torch.tensor(train_x['log_SP500_Adj_Close'].iloc[0], dtype=torch.float32) - initial_y_guess
+    state = torch.stack([initial_ln_x_guess, initial_y_guess]).reshape(2, 1)
+    state_covariance_matrix = torch.stack([
+        torch.stack([initial_ln_x_guess_variance, initial_ln_x_y_guess_covariance]),
+        torch.stack([initial_ln_x_y_guess_covariance, initial_y_guess_variance])
+    ])
 
     # create variables for nll loss accumulation - we'll take gradients wrt these later
     nll_observations = []
@@ -111,19 +114,24 @@ for epoch in range(100):
     # kalman filter forward pass
     for time_idx in range(1, len(train_x)):
         # extrapolate from previous state
-        delta_t = train_x['days_elapsed'].iloc[time_idx]
-        F_t = torch.tensor([
-            [1.0, 0.0],
-            [0.0, torch.exp(-theta_guess * delta_t)]
-        ], dtype=torch.float32)
-        B_t = torch.tensor([
-            [(mu_guess - 0.5 * sigma_guess**2) * delta_t],
-            [0.0]
-        ], dtype=torch.float32)
-        Q_t = torch.tensor([
-            [sigma_guess**2 * delta_t, (sigma_guess * alpha_guess * rho_guess / theta_guess) * (1 - torch.exp(-theta_guess * delta_t))],
-            [(sigma_guess * alpha_guess * rho_guess / theta_guess) * (1 - torch.exp(-theta_guess * delta_t)), (alpha_guess**2 / (2 * theta_guess)) * (1 - torch.exp(-2 * theta_guess * delta_t))]
-        ], dtype=torch.float32)
+        delta_t = torch.tensor(train_x['days_elapsed'].iloc[time_idx], dtype=torch.float32)
+        F_t = torch.stack([
+            torch.stack([torch.tensor(1.0, dtype=torch.float32), torch.tensor(0.0, dtype=torch.float32)]),
+            torch.stack([torch.tensor(0.0, dtype=torch.float32), torch.exp(-theta_guess * delta_t)])
+        ])
+        B_t = torch.stack([
+            (mu_guess - 0.5 * sigma_guess**2) * delta_t, torch.tensor(0.0, dtype=torch.float32)
+        ]).reshape(2,1)
+        Q_t = torch.stack([
+            torch.stack([
+                sigma_guess**2 * delta_t,
+                (sigma_guess * alpha_guess * rho_guess / theta_guess) * (1 - torch.exp(-theta_guess * delta_t))
+            ]),
+            torch.stack([
+                (sigma_guess * alpha_guess * rho_guess / theta_guess) * (1 - torch.exp(-theta_guess * delta_t)),
+                (alpha_guess**2 / (2 * theta_guess)) * (1 - torch.exp(-2 * theta_guess * delta_t))
+            ])
+        ])
         state = F_t @ state + B_t
         state_covariance_matrix = F_t @ state_covariance_matrix @ F_t.T + Q_t
         # update with observation
@@ -156,12 +164,45 @@ for epoch in range(100):
     # loss is total negative log likelihood of observed data and estimated latent states
     nll_observations_total = torch.stack(nll_observations).sum()
     nll_latents_total = torch.stack(nll_latents).sum()
-    nll_total = nll_observations_total + nll_latents_total
+    if epoch > 175:
+        nll_total = 1.05 * nll_observations_total + 0.95 * nll_latents_total
+    elif epoch > 275:
+        nll_total = 1.1 * nll_observations_total + 0.9 * nll_latents_total
+    elif epoch > 350:
+        nll_total = 1.15 * nll_observations_total + 0.85 * nll_latents_total
+    else:
+        nll_total = nll_observations_total + nll_latents_total
     optimizer.zero_grad()
     nll_total.backward()
     optimizer.step()
-    if epoch % 10 == 0 or epoch == 99:
-        print(f"Epoch {epoch}: NLL={nll_total.item()}, mu={mu_guess.item()}, sigma={sigma_guess.item()}, theta={theta_guess.item()}, alpha={alpha_guess.item()}, rho={rho_guess.item()}, initial_y={initial_y_guess.item()}, state_covariance_matrix={state_covariance_matrix.detach().numpy()}, observation_noise_variance={observation_noise_variance.item()}")
-print("Final parameters:")
-print(f"mu={mu_guess.item()}, sigma={sigma_guess.item()}, theta={theta_guess.item()}, alpha={alpha_guess.item()}, rho={rho_guess.item()}, initial_y={initial_y_guess.item()}, state_covariance_matrix={state_covariance_matrix.detach().numpy()}, observation_noise_variance={observation_noise_variance.item()}")
+    # clipping to keep variances positive
+    with torch.no_grad():
+        sigma_guess.clamp_(min=1e-2)
+        alpha_guess.clamp_(min=1e-6)
+        initial_ln_x_guess_variance.clamp_(min=1e-10)
+        initial_y_guess_variance.clamp_(min=1e-10)
+        observation_noise_variance.clamp_(min=1e-10)
+    if epoch % 10 == 0:
+        print('\n------------------------------\n')
+        print(f"Epoch {epoch}: NLL={nll_total.item():.4f}, NLL_observations={nll_observations_total.item():.4f}, mu={mu_guess.item():.4f}, sigma={sigma_guess.item():.4f}, theta={theta_guess.item():.4f}, alpha={alpha_guess.item():.4f}, rho={rho_guess.item():.4f}, initial_y={initial_y_guess.item():.4f}, state_covariance_matrix={state_covariance_matrix.detach().numpy()}, observation_noise_variance={observation_noise_variance.item():.4f}")
+    if nll_observations_total.item() < best_loss:
+        best_loss = nll_observations_total.item()
+        best_params = {
+            'mu': mu_guess.item(),
+            'sigma': sigma_guess.item(),
+            'theta': theta_guess.item(),
+            'alpha': alpha_guess.item(),
+            'rho': rho_guess.item(),
+            'initial_y': initial_y_guess.item(),
+            'initial_ln_x_variance': initial_ln_x_guess_variance.item(),
+            'initial_y_variance': initial_y_guess_variance.item(),
+            'initial_ln_x_y_covariance': initial_ln_x_y_guess_covariance.item(),
+            'observation_noise_variance': observation_noise_variance.item(),
+        }
+print("\n==============================\n")
+print(f"Best NLL: {best_loss}")
+print("Best parameters:")
+for k, v in best_params.items():
+    print(f"{k}: {v}")
+print("\n==============================\n")
 
