@@ -9,42 +9,18 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 
 # Load datasets
-prices = pd.read_csv('kaggle_data/sp500_headlines_2008_2024.csv', parse_dates=['Date'])
-lexicon = pd.read_csv('kaggle_data/financial_sentiment_lexicon.csv')
 target = pd.read_csv('kaggle_data/kaggle_headlines_with_sentiment_and_derived_market_features_and_targets.csv')
 
-# Prepare lexicon: map words to sentiment scores
-lexicon = lexicon.set_index('Word_or_Phrase')['Sentiment_Score'].to_dict()
-
-# Merge price data using date
-data = prices.copy()
-
-def headline_sentiment(headline):
-    tokens = re.findall(r'\w+', str(headline).lower())
-    scores = [lexicon.get(token, 0) for token in tokens]
-    total = sum(scores)
-    avg = np.mean(scores) if scores else 0.0
-    return pd.Series([total, avg])
-
-# Apply sentiment function row-wise and assign the result to two new columns
-data[['sent_sum', 'sent_avg']] = data['Title'].apply(headline_sentiment)
-
-grouped1 = data.groupby('Date').agg({'sent_avg': 'mean'}).reset_index()# Get target data
-
-grouped2 = target.groupby('Date').agg({
+grouped = target.groupby('Date').agg({
     'SP500_1_ahead': 'mean',
-    'SP500_Adj_Close': 'mean'
+    'SP500_Adj_Close': 'mean',
+    'summed_sentiment': 'mean'
 }).reset_index()
-
-# Merge on 'Date'
-grouped1['Date'] = pd.to_datetime(grouped1['Date'])
-grouped2['Date'] = pd.to_datetime(grouped2['Date'])
-grouped = pd.merge(grouped1, grouped2, on='Date', how='inner')
 
 # Calculate target column
 grouped['target'] = np.log(grouped['SP500_1_ahead']) - np.log(grouped['SP500_Adj_Close'])
 
-grouped.to_csv('./kaggle_data/add_lexicon_sentiment_to_headlines.csv', index=False)
+grouped.to_csv('./kaggle_data/finbert_sentiment_to_headlines.csv', index=False)
 
 grouped['Date'] = pd.to_datetime(grouped['Date'])
 grouped.sort_values(by='Date', ascending=True).reset_index()
@@ -52,7 +28,7 @@ date_80_pctile = grouped['Date'].quantile(0.8)
 data_holdout = grouped[grouped['Date'] > date_80_pctile].reset_index()
 grouped = grouped[grouped['Date'] <= date_80_pctile].reset_index()
 
-features = ['sent_avg']
+features = ['summed_sentiment']
 X = grouped[features]
 y = grouped['target']
 
