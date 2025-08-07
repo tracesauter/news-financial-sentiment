@@ -1,4 +1,3 @@
-from xml.parsers.expat import model
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -7,8 +6,6 @@ import torch.nn as nn
 from tokenizer import normalize_and_lowercase
 from conv_1d_headline_preprocess_nn_architecture import Conv1DHeadlinePreprocess
 import joblib
-
-from functools import partial
 
 from dataclasses import dataclass
 from tqdm import tqdm
