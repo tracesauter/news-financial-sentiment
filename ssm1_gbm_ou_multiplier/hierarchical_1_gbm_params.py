@@ -34,6 +34,21 @@ for char in characters_to_replace_with_comparison:
     synthetic_data['headline'] = synthetic_data['headline'].str.replace(char, '<COMPAR>', regex=False)
 
 kaggle_headline_data['Date'] = pd.to_datetime(kaggle_headline_data['Date'])
+kaggle_headline_data['Date'] = pd.to_datetime(kaggle_headline_data['Date'])
+kaggle_headline_data.sort_values(by='Date', ascending=True).reset_index()
+date_20_pctile = kaggle_headline_data['Date'].quantile(0.2)
+date_40_pctile = kaggle_headline_data['Date'].quantile(0.4)
+date_60_pctile = kaggle_headline_data['Date'].quantile(0.6)
+date_80_pctile = kaggle_headline_data['Date'].quantile(0.8)
+df_split_1 = kaggle_headline_data[kaggle_headline_data['Date'] <= date_20_pctile].reset_index(drop=True)
+df_split_2 = kaggle_headline_data[(kaggle_headline_data['Date'] > date_20_pctile) & (kaggle_headline_data['Date'] <= date_40_pctile)].reset_index(drop=True)
+df_split_3 = kaggle_headline_data[(kaggle_headline_data['Date'] > date_40_pctile) & (kaggle_headline_data['Date'] <= date_60_pctile)].reset_index(drop=True)
+df_split_4 = kaggle_headline_data[(kaggle_headline_data['Date'] > date_60_pctile) & (kaggle_headline_data['Date'] <= date_80_pctile)].reset_index(drop=True)
+df_holdout = kaggle_headline_data[kaggle_headline_data['Date'] > date_80_pctile].reset_index(drop=True)
+
+kaggle_headline_data_holdout = kaggle_headline_data[kaggle_headline_data['Date'] > date_80_pctile].reset_index()
+kaggle_headline_data = kaggle_headline_data[kaggle_headline_data['Date'] <= date_80_pctile].reset_index()
+
 bad_nans = kaggle_headline_data[[
     'SP500_Adj_Close',
     'SP500_1_ago',

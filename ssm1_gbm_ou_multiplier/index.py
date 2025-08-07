@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import torch
+from tqdm import tqdm
 
 kaggle_headline_data = pd.read_csv('kaggle_data/kaggle_headlines_with_sentiment_and_derived_market_features_and_targets.csv')
 synthetic_data = pd.read_csv("synthetic_data/consolidated_data/consolidated_with_sentiment.txt", sep="|")
@@ -77,6 +78,10 @@ train_x['time_in_days'] = (train_x['Date'] - train_x['Date'].min()).dt.days
 train_x['days_elapsed'] = train_x['time_in_days'].diff()
 train_x['log_SP500_Adj_Close'] = np.log(train_x['SP500_Adj_Close'])
 
+test_x['time_in_days'] = (test_x['Date'] - test_x['Date'].min()).dt.days
+test_x['days_elapsed'] = test_x['time_in_days'].diff()
+test_x['log_SP500_Adj_Close'] = np.log(test_x['SP500_Adj_Close'])
+
 # initial guesses for mu and sigma from hierarchical approach - fit gbm with MLE
 mu_guess = torch.tensor(0.0029898293480198263, dtype=torch.float32, requires_grad=True)
 sigma_guess = torch.tensor(0.0735540618142129, dtype=torch.float32, requires_grad=True)
@@ -99,7 +104,7 @@ optimizer = torch.optim.Adam([mu_guess, sigma_guess, theta_guess, alpha_guess, r
 best_loss = float('inf')
 best_params = None
 
-for epoch in range(400):
+for epoch in tqdm(range(400), desc="Training SSM Parameters with EM and Kalman Filter"):
     initial_ln_x_guess = torch.tensor(train_x['log_SP500_Adj_Close'].iloc[0], dtype=torch.float32) - initial_y_guess
     state = torch.stack([initial_ln_x_guess, initial_y_guess]).reshape(2, 1)
     state_covariance_matrix = torch.stack([
@@ -182,9 +187,9 @@ for epoch in range(400):
         initial_ln_x_guess_variance.clamp_(min=1e-10)
         initial_y_guess_variance.clamp_(min=1e-10)
         observation_noise_variance.clamp_(min=1e-10)
-    if epoch % 10 == 0:
-        print('\n------------------------------\n')
-        print(f"Epoch {epoch}: NLL={nll_total.item():.4f}, NLL_observations={nll_observations_total.item():.4f}, mu={mu_guess.item():.4f}, sigma={sigma_guess.item():.4f}, theta={theta_guess.item():.4f}, alpha={alpha_guess.item():.4f}, rho={rho_guess.item():.4f}, initial_y={initial_y_guess.item():.4f}, state_covariance_matrix={state_covariance_matrix.detach().numpy()}, observation_noise_variance={observation_noise_variance.item():.4f}")
+    # if epoch % 10 == 0:
+    #     print('\n------------------------------\n')
+    #     print(f"Epoch {epoch}: NLL={nll_total.item():.4f}, NLL_observations={nll_observations_total.item():.4f}, mu={mu_guess.item():.4f}, sigma={sigma_guess.item():.4f}, theta={theta_guess.item():.4f}, alpha={alpha_guess.item():.4f}, rho={rho_guess.item():.4f}, initial_y={initial_y_guess.item():.4f}, state_covariance_matrix={state_covariance_matrix.detach().numpy()}, observation_noise_variance={observation_noise_variance.item():.4f}")
     if nll_observations_total.item() < best_loss:
         best_loss = nll_observations_total.item()
         best_params = {
@@ -206,3 +211,155 @@ for k, v in best_params.items():
     print(f"{k}: {v}")
 print("\n==============================\n")
 
+# set parameters to best found values, and run on test set
+mu_guess.data = torch.tensor(best_params['mu'], dtype=torch.float32)
+sigma_guess.data = torch.tensor(best_params['sigma'], dtype=torch.float32)
+theta_guess.data = torch.tensor(best_params['theta'], dtype=torch.float32)
+alpha_guess.data = torch.tensor(best_params['alpha'], dtype=torch.float32)
+rho_guess.data = torch.tensor(best_params['rho'], dtype=torch.float32)
+initial_y_guess.data = torch.tensor(best_params['initial_y'], dtype=torch.float32)
+initial_ln_x_guess_variance.data = torch.tensor(best_params['initial_ln_x_variance'], dtype=torch.float32)
+initial_y_guess_variance.data = torch.tensor(best_params['initial_y_variance'], dtype=torch.float32)
+initial_ln_x_y_guess_covariance.data = torch.tensor(best_params['initial_ln_x_y_covariance'], dtype=torch.float32)
+observation_noise_variance.data = torch.tensor([[best_params['observation_noise_variance']]], dtype=torch.float32)
+
+train_x['prior_estimated_log_fair_value'] = -1.0
+train_x['prior_estimated_ou_exponent'] = -100.0
+train_x['posterior_estimated_log_fair_value'] = -1.0
+train_x['posterior_estimated_ou_exponent'] = -100.0
+
+# set the first row values equal to 'log_SP500_Adj_Close' and 0.0
+train_x.iloc[0, train_x.columns.get_loc('prior_estimated_log_fair_value')] = train_x.iloc[0, train_x.columns.get_loc('log_SP500_Adj_Close')]
+train_x.iloc[0, train_x.columns.get_loc('prior_estimated_ou_exponent')] = 0.0
+train_x.iloc[0, train_x.columns.get_loc('posterior_estimated_log_fair_value')] = train_x.iloc[0, train_x.columns.get_loc('log_SP500_Adj_Close')] - best_params['initial_y']
+train_x.iloc[0, train_x.columns.get_loc('posterior_estimated_ou_exponent')] = best_params['initial_y']
+
+with torch.no_grad():
+    initial_ln_x_guess = torch.tensor(train_x['log_SP500_Adj_Close'].iloc[0], dtype=torch.float32) - initial_y_guess
+    state = torch.stack([initial_ln_x_guess, initial_y_guess]).reshape(2, 1)
+    state_covariance_matrix = torch.stack([
+        torch.stack([initial_ln_x_guess_variance, initial_ln_x_y_guess_covariance]),
+        torch.stack([initial_ln_x_y_guess_covariance, initial_y_guess_variance])
+    ])
+
+    # create variables for nll loss accumulation - we'll take gradients wrt these later
+    nll_observations = []
+    nll_latents = []
+
+    # kalman filter forward pass
+    for time_idx in range(1, len(train_x)):
+        # extrapolate from previous state
+        delta_t = torch.tensor(train_x['days_elapsed'].iloc[time_idx], dtype=torch.float32)
+        F_t = torch.stack([
+            torch.stack([torch.tensor(1.0, dtype=torch.float32), torch.tensor(0.0, dtype=torch.float32)]),
+            torch.stack([torch.tensor(0.0, dtype=torch.float32), torch.exp(-theta_guess * delta_t)])
+        ])
+        B_t = torch.stack([
+            (mu_guess - 0.5 * sigma_guess**2) * delta_t, torch.tensor(0.0, dtype=torch.float32)
+        ]).reshape(2,1)
+        Q_t = torch.stack([
+            torch.stack([
+                sigma_guess**2 * delta_t,
+                (sigma_guess * alpha_guess * rho_guess / theta_guess) * (1 - torch.exp(-theta_guess * delta_t))
+            ]),
+            torch.stack([
+                (sigma_guess * alpha_guess * rho_guess / theta_guess) * (1 - torch.exp(-theta_guess * delta_t)),
+                (alpha_guess**2 / (2 * theta_guess)) * (1 - torch.exp(-2 * theta_guess * delta_t))
+            ])
+        ])
+        state = F_t @ state + B_t
+        train_x.iloc[time_idx, train_x.columns.get_loc('prior_estimated_log_fair_value')] = state[0, 0].item()
+        train_x.iloc[time_idx, train_x.columns.get_loc('prior_estimated_ou_exponent')] = state[1, 0].item()
+        state_covariance_matrix = F_t @ state_covariance_matrix @ F_t.T + Q_t
+        # update with observation
+        observation = torch.tensor([[train_x['log_SP500_Adj_Close'].iloc[time_idx]]], dtype=torch.float32)
+        surprise = observation - observation_matrix @ state # shape (1,1)
+        # compute Kalman gain
+        prior_covariance_observation = observation_matrix @ state_covariance_matrix @ observation_matrix.T + observation_noise_variance
+        kalman_gain_numerator = state_covariance_matrix @ observation_matrix.T
+        kalman_gain_denominator = prior_covariance_observation
+        kalman_gain = kalman_gain_numerator @ torch.linalg.inv(kalman_gain_denominator)
+        # derive posterior state
+        posterior_state = state + kalman_gain @ surprise
+        train_x.iloc[time_idx, train_x.columns.get_loc('posterior_estimated_log_fair_value')] = posterior_state[0, 0].item()
+        train_x.iloc[time_idx, train_x.columns.get_loc('posterior_estimated_ou_exponent')] = posterior_state[1, 0].item()
+
+        # update state covariance
+        state_covariance_matrix = (torch.eye(2) - kalman_gain @ observation_matrix) @ state_covariance_matrix @ (torch.eye(2) - kalman_gain @ observation_matrix).T + kalman_gain @ observation_noise_variance @ kalman_gain.T
+
+        # set current state to posterior
+        state = posterior_state
+
+train_x.to_csv('kalman_data_train_x.csv', index=False)
+
+# now run the filter on the test data
+initial_y_guess.data = torch.tensor(state[1, 0].item(), dtype=torch.float32)
+
+test_x['prior_estimated_log_fair_value'] = -1.0
+test_x['prior_estimated_ou_exponent'] = -100.0
+test_x['posterior_estimated_log_fair_value'] = -1.0
+test_x['posterior_estimated_ou_exponent'] = -100.0
+
+# set the first row values equal to 'log_SP500_Adj_Close' and 0.0
+test_x.iloc[0, test_x.columns.get_loc('prior_estimated_log_fair_value')] = test_x.iloc[0, test_x.columns.get_loc('log_SP500_Adj_Close')]
+test_x.iloc[0, test_x.columns.get_loc('prior_estimated_ou_exponent')] = 0.0
+test_x.iloc[0, test_x.columns.get_loc('posterior_estimated_log_fair_value')] = test_x.iloc[0, test_x.columns.get_loc('log_SP500_Adj_Close')] - best_params['initial_y']
+test_x.iloc[0, test_x.columns.get_loc('posterior_estimated_ou_exponent')] = best_params['initial_y']
+
+with torch.no_grad():
+    initial_ln_x_guess = torch.tensor(test_x['log_SP500_Adj_Close'].iloc[0], dtype=torch.float32) - initial_y_guess
+    state = torch.stack([initial_ln_x_guess, initial_y_guess]).reshape(2, 1)
+    state_covariance_matrix = torch.stack([
+        torch.stack([initial_ln_x_guess_variance, initial_ln_x_y_guess_covariance]),
+        torch.stack([initial_ln_x_y_guess_covariance, initial_y_guess_variance])
+    ])
+
+    # create variables for nll loss accumulation - we'll take gradients wrt these later
+    nll_observations = []
+    nll_latents = []
+
+    # kalman filter forward pass
+    for time_idx in range(1, len(test_x)):
+        # extrapolate from previous state
+        delta_t = torch.tensor(test_x['days_elapsed'].iloc[time_idx], dtype=torch.float32)
+        F_t = torch.stack([
+            torch.stack([torch.tensor(1.0, dtype=torch.float32), torch.tensor(0.0, dtype=torch.float32)]),
+            torch.stack([torch.tensor(0.0, dtype=torch.float32), torch.exp(-theta_guess * delta_t)])
+        ])
+        B_t = torch.stack([
+            (mu_guess - 0.5 * sigma_guess**2) * delta_t, torch.tensor(0.0, dtype=torch.float32)
+        ]).reshape(2,1)
+        Q_t = torch.stack([
+            torch.stack([
+                sigma_guess**2 * delta_t,
+                (sigma_guess * alpha_guess * rho_guess / theta_guess) * (1 - torch.exp(-theta_guess * delta_t))
+            ]),
+            torch.stack([
+                (sigma_guess * alpha_guess * rho_guess / theta_guess) * (1 - torch.exp(-theta_guess * delta_t)),
+                (alpha_guess**2 / (2 * theta_guess)) * (1 - torch.exp(-2 * theta_guess * delta_t))
+            ])
+        ])
+        state = F_t @ state + B_t
+        test_x.iloc[time_idx, test_x.columns.get_loc('prior_estimated_log_fair_value')] = state[0, 0].item()
+        test_x.iloc[time_idx, test_x.columns.get_loc('prior_estimated_ou_exponent')] = state[1, 0].item()
+        state_covariance_matrix = F_t @ state_covariance_matrix @ F_t.T + Q_t
+        # update with observation
+        observation = torch.tensor([[test_x['log_SP500_Adj_Close'].iloc[time_idx]]], dtype=torch.float32)
+        surprise = observation - observation_matrix @ state # shape (1,1)
+        # compute Kalman gain
+        prior_covariance_observation = observation_matrix @ state_covariance_matrix @ observation_matrix.T + observation_noise_variance
+        kalman_gain_numerator = state_covariance_matrix @ observation_matrix.T
+        kalman_gain_denominator = prior_covariance_observation
+        kalman_gain = kalman_gain_numerator @ torch.linalg.inv(kalman_gain_denominator)
+        # derive posterior state
+        posterior_state = state + kalman_gain @ surprise
+        test_x.iloc[time_idx, test_x.columns.get_loc('posterior_estimated_log_fair_value')] = posterior_state[0, 0].item()
+        test_x.iloc[time_idx, test_x.columns.get_loc('posterior_estimated_ou_exponent')] = posterior_state[1, 0].item()
+
+        # update state covariance
+        state_covariance_matrix = (torch.eye(2) - kalman_gain @ observation_matrix) @ state_covariance_matrix @ (torch.eye(2) - kalman_gain @ observation_matrix).T + kalman_gain @ observation_noise_variance @ kalman_gain.T
+
+        # set current state to posterior
+        state = posterior_state
+
+test_x.to_csv('kalman_data_test_x.csv', index=False)
