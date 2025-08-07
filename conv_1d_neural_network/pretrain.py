@@ -9,8 +9,13 @@ from sklearn.model_selection import train_test_split
 import random
 from functools import partial
 
+import joblib
+
 from dataclasses import dataclass
 from tqdm import tqdm
+
+torch.manual_seed(42)
+random.seed(42)
 
 @dataclass(frozen=True)
 class Config:
@@ -57,13 +62,23 @@ for char in characters_to_replace_with_comparison:
     kaggle_headline_data['Title'] = kaggle_headline_data['Title'].str.replace(char, '<COMPAR>', regex=False)
     synthetic_data['headline'] = synthetic_data['headline'].str.replace(char, '<COMPAR>', regex=False)
 
-# use train_test_split to set aside holdout data from kaggle headline data
-non_holdout_data, holdout_data = train_test_split(kaggle_headline_data, test_size=0.2, random_state=42)
-# use train_test_split to spliit non_holdout_data into train and test sets
-train_data, test_data = train_test_split(non_holdout_data, test_size=0.3, random_state=42)
+# create data splits
+kaggle_headline_data['Date'] = pd.to_datetime(kaggle_headline_data['Date'])
+kaggle_headline_data.sort_values(by='Date', ascending=True).reset_index()
+date_20_pctile = kaggle_headline_data['Date'].quantile(0.2)
+date_40_pctile = kaggle_headline_data['Date'].quantile(0.4)
+date_60_pctile = kaggle_headline_data['Date'].quantile(0.6)
+date_80_pctile = kaggle_headline_data['Date'].quantile(0.8)
+df_split_1 = kaggle_headline_data[kaggle_headline_data['Date'] <= date_20_pctile].reset_index(drop=True)
+df_split_2 = kaggle_headline_data[(kaggle_headline_data['Date'] > date_20_pctile) & (kaggle_headline_data['Date'] <= date_40_pctile)].reset_index(drop=True)
+df_split_3 = kaggle_headline_data[(kaggle_headline_data['Date'] > date_40_pctile) & (kaggle_headline_data['Date'] <= date_60_pctile)].reset_index(drop=True)
+df_split_4 = kaggle_headline_data[(kaggle_headline_data['Date'] > date_60_pctile) & (kaggle_headline_data['Date'] <= date_80_pctile)].reset_index(drop=True)
+df_holdout = kaggle_headline_data[kaggle_headline_data['Date'] > date_80_pctile].reset_index(drop=True)
+
+tokenizer_data = kaggle_headline_data[kaggle_headline_data['Date'] <= date_40_pctile].reset_index()
 
 # set corpus to a list of headlines from train_data
-corpus = train_data['Title'].tolist()
+corpus = tokenizer_data['Title'].tolist()
 
 # replace every time there are two double quotes in a row with a single double quote
 corpus = [text.replace('""', '"') for text in corpus]
@@ -78,6 +93,7 @@ vocab_size = Config.VOCAB_SIZE # The total size of the vocabulary (special + cha
 tokenizer = BPETokenizer(special_tokens=special_tokens)
 tokenizer.train(corpus, vocab_size)
 print(f"Tokenizer trained with vocabulary size: {len(tokenizer.vocab)}")
+joblib.dump(tokenizer, 'bpe_tokenizer.joblib')
 
 synthetic_train_data, synthetic_test_data = train_test_split(synthetic_data, test_size=0.3, random_state=42, stratify=synthetic_data['sentiment'])
 
@@ -146,10 +162,14 @@ collate_function_with_args = partial(
 train_dataset = FinancialNewsDataset(synthetic_train_data, tokenizer)
 test_dataset = FinancialNewsDataset(synthetic_test_data, tokenizer)
 
+g = torch.Generator()
+g.manual_seed(42)
+
 train_dataloader = DataLoader(
     train_dataset,
     batch_size=Config.BATCH_SIZE,
     shuffle=True,
+    generator=g,
     collate_fn=collate_function_with_args
 )
 test_dataloader = DataLoader(
@@ -159,9 +179,9 @@ test_dataloader = DataLoader(
     collate_fn=collate_function_with_args
 )
 
-class Conv1DHeadlineModel(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, output_channels_1, output_channels_2, output_sequence_length, kernel_size, num_sentiments, linear_out_size):
-        super(Conv1DHeadlineModel, self).__init__()
+class Conv1DHeadlinePreprocess(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, output_channels_1, output_channels_2, output_sequence_length, kernel_size, linear_out_size):
+        super(Conv1DHeadlinePreprocess, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=tokenizer.token_to_id['<PAD>'])
         self.conv1d_1 = nn.Conv1d(embedding_dim, output_channels_1, kernel_size=kernel_size, padding=1)
         self.conv1d_2 = nn.Conv1d(output_channels_1, output_channels_2, kernel_size=kernel_size, padding=1)
@@ -175,6 +195,37 @@ class Conv1DHeadlineModel(nn.Module):
             nn.ReLU(),
             nn.Linear(linear_out_size, linear_out_size)
         )
+
+    def forward(self, x):
+        x = self.embedding(x)  # Shape: (batch_size, seq_len, embedding_dim)
+        x = x.transpose(1, 2)  # Shape: (batch_size, embedding_dim, seq_len)
+        x = self.conv1d_1(x)  # Shape: (batch_size, output_channels_1, seq_len)
+        x = self.relu(x)
+        x = self.conv1d_2(x)  # Shape: (batch_size, output_channels_2, seq_len)
+        x = self.relu(x)
+        x = self.adaptive_pool(x)  # Shape: (batch_size, output_channels_2, output_sequence_length)
+        x = x.transpose(1, 2)  # Shape: (batch_size, output_sequence_length, output_channels_2)
+        # Flatten the output for the linear layer
+        x = x.reshape(x.size(0), -1)  # Shape: (batch_size, output_channels_2 * output_sequence_length)
+        x = self.linear(x)  # Shape: (batch_size, linear_out_size)
+        
+        return x
+
+
+class Conv1DHeadlineModel(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, output_channels_1, output_channels_2, output_sequence_length, kernel_size, num_sentiments, linear_out_size):
+        super(Conv1DHeadlineModel, self).__init__()
+        self.preprocess = Conv1DHeadlinePreprocess(
+            vocab_size=vocab_size,
+            embedding_dim=embedding_dim,
+            output_channels_1=output_channels_1,
+            output_channels_2=output_channels_2,
+            output_sequence_length=output_sequence_length,
+            kernel_size=kernel_size,
+            linear_out_size=linear_out_size
+        )
+        self.relu = nn.ReLU()
+
         self.token_out = nn.Sequential(
             nn.Linear(linear_out_size, 10),
             nn.ReLU(),
@@ -191,21 +242,14 @@ class Conv1DHeadlineModel(nn.Module):
         )
 
     def forward(self, x):
-        x = self.embedding(x)  # Shape: (batch_size, seq_len, embedding_dim)
-        x = x.transpose(1, 2)  # Shape: (batch_size, embedding_dim, seq_len)
-        x = self.conv1d_1(x)  # Shape: (batch_size, output_channels_1, seq_len)
-        x = self.relu(x)
-        x = self.conv1d_2(x)  # Shape: (batch_size, output_channels_2, seq_len)
-        x = self.relu(x)
-        x = self.adaptive_pool(x)  # Shape: (batch_size, output_channels_2, output_sequence_length)
-        x = x.transpose(1, 2)  # Shape: (batch_size, output_sequence_length, output_channels_2)
-        # Flatten the output for the linear layer
-        x = x.reshape(x.size(0), -1)  # Shape: (batch_size, output_channels_2 * output_sequence_length)
-        x = self.linear(x)  # Shape: (batch_size, linear_out_size)
+        x = self.preprocess(x)  # Shape: (batch_size, linear_out_size)
+
         x = self.relu(x)
         token_out = self.token_out(x)  # Shape: (batch_size, vocab_size)
         sentiment_out = self.sentiment_out(x)  # Shape: (batch_size, num_sentiments)
         return token_out, sentiment_out
+    
+
 
 model = Conv1DHeadlineModel(
     vocab_size=len(tokenizer.vocab),
@@ -242,6 +286,7 @@ def train_model(model, train_loader, test_loader, optimizer, loss_fn_token, loss
     """
     Main function to train and evaluate the model.
     """
+    best_loss = float('inf')  # Initialize best loss for early stopping
     for epoch in range(epochs):
         # --- Training Phase ---
         model.train()  # Set the model to training mode
@@ -313,6 +358,14 @@ def train_model(model, train_loader, test_loader, optimizer, loss_fn_token, loss
         token_accuracy = correct_tokens / total_samples
         token_top_two_accuracy = (correct_tokens + second_choice_correct) / total_samples
         sentiment_accuracy = correct_sentiments / total_samples
+
+        if avg_val_loss < best_loss:
+            best_loss = avg_val_loss
+            # Save the model state if validation loss improves
+            torch.save(model.state_dict(), 'best_conv1d_headline_model.pth')
+            # Save the preprocess layer state
+            torch.save(model.preprocess.state_dict(), 'best_conv1d_headline_preprocess.pth')
+            print(f"Model saved with validation loss: {avg_val_loss:.4f}")
 
         print(f"Epoch {epoch+1}/{epochs}")
         print(f"  Train Loss: {avg_train_loss:.4f}")
