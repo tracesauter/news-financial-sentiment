@@ -4,6 +4,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 
 from tokenizer import BPETokenizer, normalize_and_lowercase
+from conv_1d_headline_preprocess_nn_architecture import Conv1DHeadlinePreprocess
 from sklearn.model_selection import train_test_split
 
 import random
@@ -179,41 +180,9 @@ test_dataloader = DataLoader(
     collate_fn=collate_function_with_args
 )
 
-class Conv1DHeadlinePreprocess(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, output_channels_1, output_channels_2, output_sequence_length, kernel_size, linear_out_size):
-        super(Conv1DHeadlinePreprocess, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=tokenizer.token_to_id['<PAD>'])
-        self.conv1d_1 = nn.Conv1d(embedding_dim, output_channels_1, kernel_size=kernel_size, padding=1)
-        self.conv1d_2 = nn.Conv1d(output_channels_1, output_channels_2, kernel_size=kernel_size, padding=1)
-        self.adaptive_pool = nn.AdaptiveAvgPool1d(output_sequence_length)
-        self.relu = nn.ReLU()
-        self.pool = nn.MaxPool1d(kernel_size=2)
-        self.linear = nn.Sequential(
-            nn.Linear(output_channels_2 * output_sequence_length, 2 * linear_out_size),
-            nn.ReLU(),
-            nn.Linear(2 * linear_out_size, linear_out_size),
-            nn.ReLU(),
-            nn.Linear(linear_out_size, linear_out_size)
-        )
-
-    def forward(self, x):
-        x = self.embedding(x)  # Shape: (batch_size, seq_len, embedding_dim)
-        x = x.transpose(1, 2)  # Shape: (batch_size, embedding_dim, seq_len)
-        x = self.conv1d_1(x)  # Shape: (batch_size, output_channels_1, seq_len)
-        x = self.relu(x)
-        x = self.conv1d_2(x)  # Shape: (batch_size, output_channels_2, seq_len)
-        x = self.relu(x)
-        x = self.adaptive_pool(x)  # Shape: (batch_size, output_channels_2, output_sequence_length)
-        x = x.transpose(1, 2)  # Shape: (batch_size, output_sequence_length, output_channels_2)
-        # Flatten the output for the linear layer
-        x = x.reshape(x.size(0), -1)  # Shape: (batch_size, output_channels_2 * output_sequence_length)
-        x = self.linear(x)  # Shape: (batch_size, linear_out_size)
-        
-        return x
-
 
 class Conv1DHeadlineModel(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, output_channels_1, output_channels_2, output_sequence_length, kernel_size, num_sentiments, linear_out_size):
+    def __init__(self, vocab_size, embedding_dim, output_channels_1, output_channels_2, output_sequence_length, kernel_size, num_sentiments, linear_out_size, tokenizer):
         super(Conv1DHeadlineModel, self).__init__()
         self.preprocess = Conv1DHeadlinePreprocess(
             vocab_size=vocab_size,
@@ -222,7 +191,8 @@ class Conv1DHeadlineModel(nn.Module):
             output_channels_2=output_channels_2,
             output_sequence_length=output_sequence_length,
             kernel_size=kernel_size,
-            linear_out_size=linear_out_size
+            linear_out_size=linear_out_size,
+            tokenizer=tokenizer
         )
         self.relu = nn.ReLU()
 
@@ -259,7 +229,8 @@ model = Conv1DHeadlineModel(
     output_sequence_length=Config.OUTPUT_SEQUENCE_LENGTH,
     kernel_size=Config.KERNEL_SIZE,
     num_sentiments=Config.NUM_SENTIMENTS,
-    linear_out_size=Config.LINEAR_OUT_SIZE
+    linear_out_size=Config.LINEAR_OUT_SIZE,
+    tokenizer=tokenizer
 )
 
 # print number of model parameters
