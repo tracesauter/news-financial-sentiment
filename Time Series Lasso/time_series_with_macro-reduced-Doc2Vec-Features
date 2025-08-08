@@ -2133,7 +2133,9 @@
    "cell_type": "code",
    "execution_count": 159,
    "id": "7163c29b-1f54-41d8-b5c8-38e0ad93d8a1",
-   "metadata": {},
+   "metadata": {
+    "scrolled": true
+   },
    "outputs": [
     {
      "name": "stdout",
