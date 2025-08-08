@@ -56,5 +56,8 @@ for name, model in models.items():
         
         mse = mean_squared_error(y_test, pred)
         r2 = r2_score(y_test, pred)
-        
-        print(f"Fold {fold}: MSE = {mse:.6f}, R² = {r2:.4f}")
+        if hasattr(model, 'coef_'):
+            coef = model.coef_
+            print(f"Fold {fold}: MSE = {mse:.6f}, R² = {r2:.4f}, coef = {coef}")
+        else:
+            print(f"Fold {fold}: MSE = {mse:.6f}, R² = {r2:.4f}")
