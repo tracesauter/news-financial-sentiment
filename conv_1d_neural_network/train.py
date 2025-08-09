@@ -332,7 +332,7 @@ def train_model(
 if __name__ == "__main__":
     # train the model
     train_model(
-        train_dfs=[df_split_1, df_split_2],
-        test_dfs=[df_split_3],
+        train_dfs=[df_split_1, df_split_2, df_split_3],
+        test_dfs=[df_split_4],
         pretrained_nn_preprocessing_layer_weights_path='conv_1d_neural_network/best_conv1d_headline_preprocess.pth'
     )
