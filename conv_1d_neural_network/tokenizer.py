@@ -3,7 +3,7 @@ import unicodedata
 import collections
 
 def normalize_and_lowercase(text):
-    """Casts to lowercase and removes accents/diacritics."""
+    # casts to lowercase and removes accents/diacritics.
     return "".join(
         c for c in unicodedata.normalize("NFD", text.lower())
         if unicodedata.category(c) != "Mn"
@@ -43,7 +43,7 @@ class BPETokenizer:
         normalized_corpus = [normalize_and_lowercase(text) for text in text_corpus]
 
         # Pre-tokenize to handle spaces: attach space to the start of each word but the first
-        # This preserves word boundaries within the BPE algorithm.
+        # this preserves word boundaries within the BPE algorithm.
         pre_tokenized_corpus = []
         for text in normalized_corpus:
             words = text.split()
@@ -104,7 +104,7 @@ class BPETokenizer:
                     substring = word[i:j]
                     if substring in self.token_to_id:
                         longest_match = substring
-                        break # Found the longest one, no need to check shorter ones
+                        break # found longest one. no need to check shorter ones
                 
                 if longest_match:
                     word_tokens.append(longest_match)
@@ -125,6 +125,6 @@ class BPETokenizer:
         if not self.id_to_token:
             raise RuntimeError("Tokenizer has not been trained yet. Call train() first.")
         
-        # Simply join the tokens. Spaces are baked into the tokens themselves.
+        # join the tokens - which already acounts for spaces
         tokens = [self.id_to_token.get(i, "") for i in ids]
         return "".join(tokens)

@@ -1,3 +1,4 @@
 */api_key.txt
 **/generated_data/*
 **/secrets/**
+**/__pycache__/**
