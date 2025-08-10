@@ -44,3 +44,9 @@
   - implements the Kalman Filter and EM algorithm approach for optimizing parameters of the state space model. performs this "training" procedure on different splits of the data, and then writes inferred latent states (based on using the Kalman Filter with the optimized parameters) on the in sample chunk as well as the next time period (out of sample) chunk of data so that we can use those in a subsequent model to predict our target
 - *news-financial-sentiment/ssm1_gbm_ou_multiplier/predict_target.py*
   - uses xgboost to make predictions on the target variable using latent states inferred from the Kalman Filter exercise as regressors to explore whether we were able to infer mean reverting states that have forward looking predictive power.
+
+  ### Key files for sklearn models approach
+  - *lexicon_data/finbert_data.py*
+   - implements the Linear Regression, Random Forest Regressor, Support Vector Regression (SVR) and Multilayer Perceptron (MLP) Regressor models to the data with finbert sentiments.
+  - *lexicon_data/lexicon_data.py*
+   - calculated the daily average sentiment using the financial sentiment lexicon and implements the Linear Regression, Random Forest Regressor, Support Vector Regression (SVR) and Multilayer Perceptron (MLP) Regressor models.

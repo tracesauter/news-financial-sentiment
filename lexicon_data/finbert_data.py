@@ -20,7 +20,7 @@ grouped = target.groupby('Date').agg({
 # Calculate target column
 grouped['target'] = np.log(grouped['SP500_1_ahead']) - np.log(grouped['SP500_Adj_Close'])
 
-grouped.to_csv('./kaggle_data/finbert_sentiment_to_headlines.csv', index=False)
+grouped.to_csv('./lexicon_data/finbert_sentiment_to_headlines.csv', index=False)
 
 grouped['Date'] = pd.to_datetime(grouped['Date'])
 grouped.sort_values(by='Date', ascending=True).reset_index()
