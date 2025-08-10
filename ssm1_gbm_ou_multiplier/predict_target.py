@@ -3,7 +3,9 @@ import numpy as np
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error
 
-df = pd.read_csv('ssm1_gbm_ou_multiplier/ssm_estimates_chunk_2_3.csv')
+chunks_for_training = '3_4'
+
+df = pd.read_csv(f'ssm1_gbm_ou_multiplier/ssm_estimates_chunk_{chunks_for_training}.csv')
 df['SP500_Adj_Close_1_behind'] = df['SP500_Adj_Close'].shift(1)
 df['SP500_Adj_Close_1_ahead'] = df['SP500_Adj_Close'].shift(-1)
 df['Date'] = pd.to_datetime(df['Date'])
@@ -78,5 +80,8 @@ model = xgb.train(params, train_dmatrix, num_rounds, evals=[(test_dmatrix, 'test
 predictions = model.predict(test_dmatrix)
 mse = mean_squared_error(test_y, predictions)
 correlation = np.corrcoef(test_y.to_numpy(), predictions)[0, 1]
+
+print('\n\n')
+print(f'Out of sample forward looking performance using SSM trained on chunk {chunks_for_training}')
 print(f'Mean Squared Error: {mse}')
 print(f'Correlation: {correlation}')
